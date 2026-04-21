@@ -646,23 +646,42 @@ async function addMissedPayment(dealId, note) {
   } catch(e) { console.error("addMissedPayment error", e); return false; }
 }
 // ─── AI STATEMENT ANALYZER ────────────────────────────────────────────────────
+async function extractPdfText(file) {
+  if (typeof window === "undefined" || !window.pdfjsLib) {
+    throw new Error("PDF reader (pdf.js) not loaded. Refresh the page and try again.");
+  }
+  const buf = await file.arrayBuffer();
+  const pdf = await window.pdfjsLib.getDocument({ data: buf }).promise;
+  let out = "";
+  for (let i = 1; i <= pdf.numPages; i++) {
+    const page = await pdf.getPage(i);
+    const tc = await page.getTextContent();
+    const pageText = tc.items.map(it => it.str).join(" ");
+    out += "\n\n=== PAGE " + i + " ===\n" + pageText;
+  }
+  return out;
+}
 async function analyzeStatements(files, lenderContext) {
-  const fileContents = await Promise.all(files.map(f => new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = (e) => resolve({ name: f.name, type: f.type, data: e.target.result.split(",")[1] });
-    reader.onerror = reject;
-    reader.readAsDataURL(f);
-  })));
   const isImage = (type) => type.startsWith("image/");
   const isPDF = (type) => type === "application/pdf";
-  const contentBlocks = fileContents.map(fc => {
-    if (isPDF(fc.type)) {
-      return { type:"document", source:{ type:"base64", media_type:"application/pdf", data:fc.data }, title: fc.name };
-    } else if (isImage(fc.type)) {
-      return { type:"image", source:{ type:"base64", media_type:fc.type, data:fc.data } };
+  const contentBlocks = [];
+  for (const f of files) {
+    if (isPDF(f.type)) {
+      // Extract text client-side to stay under Vercel's 4.5MB body limit
+      const text = await extractPdfText(f);
+      contentBlocks.push({ type: "text", text: "=== BANK STATEMENT FILE: " + f.name + " ===\n" + text });
+    } else if (isImage(f.type)) {
+      // Images stay as base64 (usually small enough)
+      const dataUrl = await new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = (e) => resolve(e.target.result);
+        reader.onerror = reject;
+        reader.readAsDataURL(f);
+      });
+      const base64 = dataUrl.split(",")[1];
+      contentBlocks.push({ type: "image", source: { type: "base64", media_type: f.type, data: base64 } });
     }
-    return null;
-  }).filter(Boolean);
+  }
   contentBlocks.push({
     type:"text",
     text:`You are an elite MCA underwriting AI. Your job is to outperform human underwriters by detecting patterns, not just totals. Analyze these bank statements with the depth of a forensic accountant. Return ONLY a raw JSON object — no markdown, no backticks, no explanation.
