@@ -783,14 +783,30 @@ ${lenderContext?.rejected?.length > 0 ? `\nEL JAY'S REJECTED LIST — names the 
     headers:{ "Content-Type":"application/json" },
     body: JSON.stringify({
       model:"claude-sonnet-4-6",
-      max_tokens:3000,
+      max_tokens:8000,
       messages:[{ role:"user", content:contentBlocks }]
     })
   });
   const data = await response.json();
+  if (typeof window !== "undefined") window.__lastAnthropicResponse = data;
+  if (!response.ok || data.error) {
+    const et = data?.error?.type || ("http_" + response.status);
+    const em = data?.error?.message || JSON.stringify(data).slice(0,300);
+    throw new Error("Anthropic API " + et + ": " + em);
+  }
+  if (data.stop_reason === "max_tokens") {
+    throw new Error("Response was truncated (hit max_tokens). Split upload into 2 smaller batches and try again.");
+  }
   const text = data.content?.find(b=>b.type==="text")?.text || "";
-  const clean = text.replace(/```json|```/g,"").trim();
-  return JSON.parse(clean);
+  let clean = text.replace(/```json|```/g,"").trim();
+  const firstBrace = clean.indexOf("{");
+  const lastBrace = clean.lastIndexOf("}");
+  if (firstBrace >= 0 && lastBrace > firstBrace) clean = clean.slice(firstBrace, lastBrace + 1);
+  try {
+    return JSON.parse(clean);
+  } catch (parseErr) {
+    throw new Error("JSON parse failed: " + parseErr.message + " | first 200 chars: " + clean.slice(0,200));
+  }
 }
 // ─── DESIGN TOKENS ────────────────────────────────────────────────────────────
 const C = {
@@ -1220,8 +1236,10 @@ Be direct, specific, use actual numbers. Talk like a senior underwriter colleagu
       setAiFilledFields(filled);
       setView("form");
     } catch(err) {
-      setAnalysisError("Could not parse the statement(s). Please check the file and try again, or enter values manually.");
-      console.error(err);
+      const msg = (err && err.message) ? err.message : String(err);
+      setAnalysisError("Parse failed: " + msg + " — open browser console (F12) for full details, or enter values manually.");
+      console.error("Statement parse error:", err);
+      if (typeof window !== "undefined" && window.__lastAnthropicResponse) console.error("Last Anthropic response:", window.__lastAnthropicResponse);
     }
     setAnalyzing(false);
   };
